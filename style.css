@@ -104,3 +104,10 @@ footer a { color: inherit; }
 .found.prec-calle { color: #b45309; }
 .found.prec-zona { color: #b91c1c; }
 .failed { margin: 0 0 12px; padding-left: 20px; color: #b91c1c; }
+
+/* --- Móvil / PWA --- */
+.container { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+button, .maps-link { min-height: 48px; touch-action: manipulation; }
+input[type="text"], textarea { font-size: 16px; } /* evita el zoom automático al enfocar */
+input[type="checkbox"] { width: 22px; height: 22px; }
+.install { width: 100%; margin-bottom: 12px; background: #1e293b; color: #fff; }

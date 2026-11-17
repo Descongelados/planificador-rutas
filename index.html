@@ -2,7 +2,12 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <title>Planificador de Rutas Óptimas Multi-Destino</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -10,6 +15,7 @@
   <main class="container">
     <h1>Planificador de Rutas</h1>
     <p class="subtitle">Valida tus direcciones, obtén la ruta más eficiente y recórrela en zonas de 10 destinos con Google Maps.</p>
+    <button id="install" type="button" class="install hidden">Instalar app en este teléfono</button>
 
     <section class="card">
       <label for="start">Punto de partida</label>
@@ -19,7 +25,7 @@
       </div>
 
       <label for="destinations">Destinos (uno por línea)</label>
-      <textarea id="destinations" rows="7" placeholder="Calle de Alcalá 50, Madrid&#10;Gran Vía 28, Madrid&#10;Paseo del Prado 1, Madrid"></textarea>
+      <textarea id="destinations" rows="7" spellcheck="false" autocapitalize="none" placeholder="Calle de Alcalá 50, Madrid&#10;Gran Vía 28, Madrid&#10;Paseo del Prado 1, Madrid"></textarea>
 
       <label class="check">
         <input id="roundtrip" type="checkbox"> Regresar al punto de partida
@@ -50,5 +56,6 @@
     </footer>
   </main>
   <script type="module" src="app.js"></script>
+  <script type="module" src="pwa.js"></script>
 </body>
 </html>
