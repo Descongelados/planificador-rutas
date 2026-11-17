@@ -4,9 +4,15 @@ const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_TRIP_URL = "https://router.project-osrm.org/trip/v1/driving/";
 const NOMINATIM_DELAY_MS = 1100; // política de uso: máx. 1 petición por segundo
 const SEARCH_RADIUS_DEG = 0.5;   // radio de búsqueda de destinos alrededor del origen (~55 km)
-const MAX_STOPS_PER_LINK = 10;   // Google Maps: origen + 8 paradas + destino
+const ZONE_SIZE = 10;            // destinos por zona (origen + 9 paradas intermedias + destino por enlace)
 const MAX_OSRM_POINTS = 100;     // el servidor público de OSRM rechaza más de 100 coordenadas
-const CACHE_KEY = "planificador-geocache-v1";
+const CACHE_KEY = "planificador-geocache-v2";
+
+const PRECISION_LABEL = {
+  exacta: "Dirección exacta",
+  calle: "Solo calle (sin número)",
+  zona: "Zona aproximada",
+};
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,6 +60,13 @@ function cacheKey(query, near) {
   return `${query.trim().toLowerCase()}|${zone}`;
 }
 
+// exacta: Nominatim devolvió número de casa; calle: solo la vía; zona: colonia, ciudad u otro.
+function precisionOf(hit) {
+  if (hit.address?.house_number) return "exacta";
+  if (hit.class === "highway") return "calle";
+  return "zona";
+}
+
 let lastRequest = 0;
 async function search(query, near) {
   // Respeta el límite de 1 petición/segundo sin esperar cuando la respuesta viene de la caché.
@@ -61,7 +74,7 @@ async function search(query, near) {
   if (wait > 0) await sleep(wait);
   lastRequest = Date.now();
 
-  let url = `${NOMINATIM_URL}?format=json&limit=1&q=${encodeURIComponent(query)}`;
+  let url = `${NOMINATIM_URL}?format=json&limit=1&addressdetails=1&q=${encodeURIComponent(query)}`;
   if (near) {
     // Restringe la búsqueda a ~55 km alrededor del punto de partida.
     const d = SEARCH_RADIUS_DEG;
@@ -76,7 +89,7 @@ async function search(query, near) {
 async function geocode(query, near) {
   const label = query.trim();
   const direct = parseCoords(query);
-  if (direct) return { ...direct, label };
+  if (direct) return { ...direct, label, precision: "exacta" };
 
   const key = cacheKey(query, near);
   if (cache[key]) return { ...cache[key], label };
@@ -90,7 +103,12 @@ async function geocode(query, near) {
   if (!hit) {
     throw new Error(near ? "no encontrada cerca del punto de partida (agrega colonia o municipio)" : "no encontrada");
   }
-  const point = { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), found: hit.display_name };
+  const point = {
+    lat: parseFloat(hit.lat),
+    lon: parseFloat(hit.lon),
+    found: hit.display_name,
+    precision: precisionOf(hit),
+  };
   cache[key] = point;
   saveCache();
   return { ...point, label };
@@ -102,7 +120,7 @@ function formatEta(sec) {
 }
 
 // El punto de partida es obligatorio (si falla, se lanza el error).
-// Los destinos que no se encuentran se omiten y se devuelven en `failed`.
+// Los destinos que no se encuentran se devuelven en `failed`.
 async function geocodeAll(start, dests) {
   const origin = await geocode(start, null);
   const points = [origin];
@@ -114,7 +132,7 @@ async function geocodeAll(start, dests) {
   for (let i = 0; i < dests.length; i++) {
     const remaining = pending.slice(i).filter(Boolean).length * (NOMINATIM_DELAY_MS / 1000);
     setStatus(
-      `Geocodificando ${i + 1} de ${dests.length}` + (remaining ? ` · quedan ~${formatEta(remaining)}` : "") + "…"
+      `Validando dirección ${i + 1} de ${dests.length}` + (remaining ? ` · quedan ~${formatEta(remaining)}` : "") + "…"
     );
     try {
       points.push(await geocode(dests[i], origin));
@@ -127,7 +145,8 @@ async function geocodeAll(start, dests) {
 
 // --- Optimización (OSRM) ---
 
-// Devuelve los puntos reordenados (el primero siempre es el punto de partida).
+// Devuelve los puntos reordenados (el primero siempre es el punto de partida) y los tramos
+// (`legs[i]` va del punto i al i+1 del orden devuelto; con regreso hay un tramo extra al origen).
 async function optimize(points, roundtrip) {
   const coords = points.map((p) => `${p.lon},${p.lat}`).join(";");
   const params = `?source=first&roundtrip=${roundtrip}${roundtrip ? "" : "&destination=any"}&overview=false`;
@@ -141,36 +160,52 @@ async function optimize(points, roundtrip) {
     .sort((a, b) => a.pos - b.pos)
     .map((x) => x.p);
   const trip = data.trips[0];
-  return { ordered, distance: trip.distance, duration: trip.duration };
+  const legs = trip.legs.map((l) => ({ distance: l.distance, duration: l.duration }));
+  return { ordered, legs, distance: trip.distance, duration: trip.duration };
 }
 
-// --- Enlaces de Google Maps ---
+// --- Zonas y enlaces de Google Maps ---
 
-// Cada tramo empieza en la última parada del anterior. `from`/`to` son números de parada (1 = partida).
-function mapsLinks(ordered, roundtrip) {
-  const seq = roundtrip ? [...ordered, ordered[0]] : ordered;
-  // Google geocodifica mejor los números de calle que Nominatim, así que se le pasa el texto
-  // original; solo se usan coordenadas si el usuario las escribió directamente.
-  const fmt = (p) => (parseCoords(p.label) ? `${p.lat},${p.lon}` : p.label.replace(/\|/g, " "));
-  const links = [];
-  for (let i = 0; i < seq.length - 1; i += MAX_STOPS_PER_LINK - 1) {
-    const chunk = seq.slice(i, i + MAX_STOPS_PER_LINK);
-    if (chunk.length < 2) break;
-    const params = new URLSearchParams({
-      api: "1",
-      travelmode: "driving",
-      origin: fmt(chunk[0]),
-      destination: fmt(chunk[chunk.length - 1]),
-    });
-    const middle = chunk.slice(1, -1).map(fmt).join("|");
-    if (middle) params.set("waypoints", middle);
-    links.push({
-      href: `https://www.google.com/maps/dir/?${params}`,
-      from: i + 1,
-      to: i + chunk.length,
+// Google geocodifica mejor los números de calle que Nominatim, así que se le pasa el texto
+// original; solo se usan coordenadas si el usuario las escribió directamente.
+function mapsPlace(p) {
+  return parseCoords(p.label) ? `${p.lat},${p.lon}` : p.label.replace(/\|/g, " ");
+}
+
+function mapsUrl(origin, stops) {
+  const params = new URLSearchParams({
+    api: "1",
+    travelmode: "driving",
+    origin: mapsPlace(origin),
+    destination: mapsPlace(stops[stops.length - 1]),
+  });
+  const middle = stops.slice(0, -1).map(mapsPlace).join("|");
+  if (middle) params.set("waypoints", middle);
+  return `https://www.google.com/maps/dir/?${params}`;
+}
+
+// Divide la ruta ya optimizada en zonas consecutivas de ZONE_SIZE destinos.
+// Cada zona sale de la última parada de la anterior, así el conductor no tiene que mover nada.
+// Con regreso, el retorno al punto de partida cuenta como una parada más de la última zona.
+function buildZones(ordered, legs, roundtrip) {
+  const stops = ordered.slice(1);
+  if (roundtrip) stops.push({ ...ordered[0], isReturn: true });
+
+  const zones = [];
+  for (let i = 0; i < stops.length; i += ZONE_SIZE) {
+    const chunk = stops.slice(i, i + ZONE_SIZE);
+    const origin = i === 0 ? ordered[0] : stops[i - 1];
+    const zoneLegs = legs.slice(i, i + chunk.length);
+    zones.push({
+      origin,
+      stops: chunk,
+      first: i + 1,
+      distance: zoneLegs.reduce((s, l) => s + l.distance, 0),
+      duration: zoneLegs.reduce((s, l) => s + l.duration, 0),
+      href: mapsUrl(origin, chunk),
     });
   }
-  return links;
+  return zones;
 }
 
 // --- Interfaz ---
@@ -180,72 +215,115 @@ function formatDuration(sec) {
   return min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`;
 }
 
-function renderWarnings({ failed = [], dupes = 0 }) {
-  const box = $("warnings");
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function renderWarnings({ failed = [], dupes = 0, points = [] }) {
   const nodes = [];
   if (failed.length) {
-    const p = document.createElement("p");
-    p.textContent = `No se pudieron ubicar ${failed.length} dirección(es); no están incluidas en la ruta:`;
-    const ul = document.createElement("ul");
-    for (const f of failed) {
-      const li = document.createElement("li");
-      li.textContent = `${f.query} — ${f.reason}`;
-      ul.append(li);
-    }
-    nodes.push(p, ul);
+    nodes.push(el("p", `Se omitieron ${failed.length} dirección(es) que no se pudieron ubicar:`));
+    const ul = el("ul");
+    for (const f of failed) ul.append(el("li", `${f.query} — ${f.reason}`));
+    nodes.push(ul);
   }
-  if (dupes) {
-    const p = document.createElement("p");
-    p.textContent = `${dupes} dirección(es) repetida(s) se contaron una sola vez.`;
-    nodes.push(p);
+  const rough = points.slice(1).filter((p) => p.precision !== "exacta");
+  if (rough.length) {
+    const calle = rough.filter((p) => p.precision === "calle").length;
+    const zona = rough.length - calle;
+    const parts = [];
+    if (calle) parts.push(`${calle} solo por calle`);
+    if (zona) parts.push(`${zona} por zona aproximada`);
+    nodes.push(
+      el(
+        "p",
+        `Ubicación aproximada en ${rough.length} de ${points.length - 1} direcciones (${parts.join(", ")}). ` +
+          "El orden de paradas muy cercanas puede no ser exacto; Google Maps sí usa la dirección completa."
+      )
+    );
   }
+  if (dupes) nodes.push(el("p", `${dupes} dirección(es) repetida(s) se contaron una sola vez.`));
+
+  const box = $("warnings");
   box.replaceChildren(...nodes);
   box.classList.toggle("hidden", nodes.length === 0);
 }
 
-function render({ ordered, distance, duration }, roundtrip, notes = {}) {
-  $("summary").textContent =
-    `${ordered.length - 1} destinos · ${(distance / 1000).toFixed(1)} km · ` +
-    `${formatDuration(duration)} aprox. (sin tráfico)`;
-  renderWarnings(notes);
-
-  const list = $("stops");
-  list.replaceChildren(
-    ...ordered.map((p) => {
-      const li = document.createElement("li");
-      const text = document.createElement("div");
-      text.textContent = p.label;
-      li.append(text);
-      if (p.found) {
-        const small = document.createElement("small");
-        small.className = "found";
-        small.textContent = p.found;
-        text.append(small);
-      }
-      return li;
-    })
+function renderZone(zone, index, total, roundtrip) {
+  const wrap = el("div", undefined, "zone");
+  wrap.append(el("h3", `Zona ${index + 1} de ${total}`));
+  wrap.append(
+    el(
+      "p",
+      `${zone.stops.length} parada(s) · ${(zone.distance / 1000).toFixed(1)} km · ${formatDuration(zone.duration)}`,
+      "summary"
+    )
   );
-  if (roundtrip) {
-    const li = document.createElement("li");
-    li.textContent = `${ordered[0].label} (regreso)`;
+  wrap.append(el("p", `Sale de: ${zone.origin.label}`, "origin"));
+
+  const list = el("ol", undefined, "stops");
+  list.style.counterReset = `stop ${zone.first - 1}`;
+  for (const p of zone.stops) {
+    const li = el("li");
+    const text = el("div", p.isReturn ? `${p.label} (regreso)` : p.label);
+    if (p.found) {
+      const small = el("small", `${PRECISION_LABEL[p.precision]} · ${p.found}`, "found");
+      small.classList.add(`prec-${p.precision}`);
+      text.append(small);
+    }
+    li.append(text);
     list.append(li);
   }
+  wrap.append(list);
 
-  const links = mapsLinks(ordered, roundtrip);
-  $("links").replaceChildren(
-    ...links.map(({ href, from, to }, i) => {
-      const a = document.createElement("a");
-      a.href = href;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent =
-        links.length > 1
-          ? `Tramo ${i + 1} de ${links.length} · paradas ${from}–${to}`
-          : "Iniciar navegación en Google Maps";
-      return a;
-    })
-  );
+  const a = el("a", `Abrir zona ${index + 1} en Google Maps`, "maps-link");
+  a.href = zone.href;
+  a.target = "_blank";
+  a.rel = "noopener";
+  wrap.append(a);
+  return wrap;
+}
+
+function render({ ordered, legs, distance, duration }, roundtrip, notes) {
+  const zones = buildZones(ordered, legs, roundtrip);
+  $("summary").textContent =
+    `${ordered.length - 1} destinos · ${zones.length} zona(s) · ${(distance / 1000).toFixed(1)} km · ` +
+    `${formatDuration(duration)} aprox. (sin tráfico)`;
+  renderWarnings({ ...notes, points: ordered });
+  $("zones").replaceChildren(...zones.map((z, i) => renderZone(z, i, zones.length, roundtrip)));
   $("result").classList.remove("hidden");
+}
+
+function showValidation({ points, failed }) {
+  $("validation-summary").textContent =
+    `${points.length - 1} dirección(es) ubicadas y ${failed.length} sin ubicar.`;
+  $("validation-failed").replaceChildren(...failed.map((f) => el("li", `${f.query} — ${f.reason}`)));
+  $("validation").classList.remove("hidden");
+}
+
+function setBusy(busy) {
+  $("plan").disabled = busy;
+  $("continue").disabled = busy;
+}
+
+let pending = null; // resultado de la validación a la espera de confirmar
+
+async function finish({ points, failed, dupes, roundtrip }) {
+  setBusy(true);
+  $("validation").classList.add("hidden");
+  try {
+    setStatus("Calculando la ruta más eficiente…");
+    const result = await optimize(points, roundtrip);
+    setStatus("");
+    render(result, roundtrip, { failed, dupes });
+  } catch (err) {
+    setStatus(err.message || "Ocurrió un error inesperado.", true);
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function plan() {
@@ -266,29 +344,28 @@ async function plan() {
     );
   }
 
-  const btn = $("plan");
-  btn.disabled = true;
+  setBusy(true);
+  pending = null;
   $("result").classList.add("hidden");
+  $("validation").classList.add("hidden");
   try {
-    const { points, failed } = await geocodeAll(start, dests);
-    if (points.length === 1) {
+    const geo = await geocodeAll(start, dests);
+    if (geo.points.length === 1) {
       throw new Error("No se pudo ubicar ninguno de los destinos. Revisa que incluyan colonia o municipio.");
     }
-    const notes = { failed, dupes };
-    if (points.length === 2 && !roundtrip) {
+    pending = { ...geo, dupes, roundtrip };
+    if (geo.failed.length) {
+      // Todas las direcciones deben validarse: con fallos, el usuario decide antes de calcular.
       setStatus("");
-      render({ ordered: points, distance: 0, duration: 0 }, false, notes);
-      $("summary").textContent = "1 destino";
+      showValidation(geo);
       return;
     }
-    setStatus("Calculando la ruta óptima…");
-    const result = await optimize(points, roundtrip);
-    setStatus("");
-    render(result, roundtrip, notes);
+    setBusy(false);
+    await finish(pending);
   } catch (err) {
     setStatus(err.message || "Ocurrió un error inesperado.", true);
   } finally {
-    btn.disabled = false;
+    setBusy(false);
   }
 }
 
@@ -310,4 +387,5 @@ loadDraft();
 $("start").addEventListener("input", saveDraft);
 $("destinations").addEventListener("input", saveDraft);
 $("plan").addEventListener("click", plan);
+$("continue").addEventListener("click", () => pending && finish(pending));
 $("locate").addEventListener("click", useMyLocation);

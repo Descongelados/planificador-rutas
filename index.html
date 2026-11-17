@@ -9,7 +9,7 @@
 <body>
   <main class="container">
     <h1>Planificador de Rutas</h1>
-    <p class="subtitle">Ordena tus destinos por la ruta más rápida y navega con Google Maps.</p>
+    <p class="subtitle">Valida tus direcciones, obtén la ruta más eficiente y recórrela en zonas de 10 destinos con Google Maps.</p>
 
     <section class="card">
       <label for="start">Punto de partida</label>
@@ -25,16 +25,23 @@
         <input id="roundtrip" type="checkbox"> Regresar al punto de partida
       </label>
 
-      <button id="plan" type="button" class="primary">Calcular ruta óptima</button>
+      <button id="plan" type="button" class="primary">Validar y calcular ruta</button>
       <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section id="validation" class="card hidden">
+      <h2>Validación de direcciones</h2>
+      <p id="validation-summary" class="summary"></p>
+      <ul id="validation-failed" class="failed"></ul>
+      <p class="summary">Corrige o elimina esas líneas y vuelve a calcular, o continúa sin ellas.</p>
+      <button id="continue" type="button" class="primary">Continuar sin estas direcciones</button>
     </section>
 
     <section id="result" class="card hidden">
       <h2>Ruta optimizada</h2>
       <p id="summary" class="summary"></p>
       <div id="warnings" class="warnings hidden"></div>
-      <ol id="stops" class="stops"></ol>
-      <div id="links" class="links"></div>
+      <div id="zones"></div>
     </section>
 
     <footer>
