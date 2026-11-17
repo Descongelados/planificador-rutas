@@ -8,7 +8,13 @@ Aplicación web estática (HTML, CSS y JavaScript puro) que:
 
 ## Uso
 
-Abre `index.html` en el navegador (o sirve la carpeta con cualquier servidor estático, p. ej. `python -m http.server`).
+```
+npm install
+npm run dev      # desarrollo
+npm run build    # genera dist/ para publicar
+```
+
+También sirve cualquier servidor estático (p. ej. `python -m http.server`); no se puede abrir con doble clic (`file://`) porque el script es un módulo ES.
 Para usar el botón de ubicación en el móvil se requiere HTTPS (o `localhost`).
 
 ## Notas
