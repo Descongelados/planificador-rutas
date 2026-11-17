@@ -94,3 +94,7 @@ footer { text-align: center; font-size: .8rem; color: #64748b; padding: 8px 0 24
 footer a { color: inherit; }
 
 .found { display: block; color: #64748b; font-size: .8rem; }
+
+.warnings { background: #fef3c7; color: #78350f; border-radius: 8px; padding: 8px 12px; font-size: .9rem; margin-bottom: 12px; }
+.warnings p { margin: 4px 0; }
+.warnings ul { margin: 4px 0; padding-left: 20px; }
