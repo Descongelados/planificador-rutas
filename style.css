@@ -92,3 +92,5 @@ button:disabled { opacity: .6; cursor: wait; }
 
 footer { text-align: center; font-size: .8rem; color: #64748b; padding: 8px 0 24px; }
 footer a { color: inherit; }
+
+.found { display: block; color: #64748b; font-size: .8rem; }

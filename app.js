@@ -3,6 +3,7 @@
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_TRIP_URL = "https://router.project-osrm.org/trip/v1/driving/";
 const NOMINATIM_DELAY_MS = 1100; // política de uso: máx. 1 petición por segundo
+const SEARCH_RADIUS_DEG = 0.5;   // radio de búsqueda de destinos alrededor del origen (~55 km)
 const MAX_STOPS_PER_LINK = 10;   // Google Maps: origen + 8 paradas + destino
 
 const $ = (id) => document.getElementById(id);
@@ -23,16 +24,38 @@ function parseCoords(text) {
   return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
 }
 
-async function geocode(query) {
+async function search(query, near) {
+  let url = `${NOMINATIM_URL}?format=json&limit=1&q=${encodeURIComponent(query)}`;
+  if (near) {
+    // Restringe la búsqueda a ~55 km alrededor del punto de partida.
+    const d = SEARCH_RADIUS_DEG;
+    url += `&viewbox=${near.lon - d},${near.lat + d},${near.lon + d},${near.lat - d}&bounded=1`;
+  }
+  const res = await fetch(url, { headers: { "Accept-Language": "es" } });
+  if (!res.ok) throw new Error(`Nominatim respondió ${res.status}`);
+  return (await res.json())[0];
+}
+
+// `near`: punto de partida; si se indica, los destinos se buscan cerca de él.
+async function geocode(query, near) {
   const direct = parseCoords(query);
   if (direct) return { ...direct, label: query.trim() };
 
-  const url = `${NOMINATIM_URL}?format=json&limit=1&q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, { headers: { "Accept-Language": "es" } });
-  if (!res.ok) throw new Error(`Nominatim respondió ${res.status}`);
-  const data = await res.json();
-  if (!data.length) throw new Error(`No se encontró la dirección: "${query}"`);
-  return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), label: query.trim() };
+  let hit = await search(query, near);
+  if (!hit && near) {
+    // Reintento sin números (calle/CP), por si OSM no tiene ese número exacto.
+    const simplified = query.replace(/\b\d+\b/g, " ").replace(/\s+/g, " ").replace(/\s+,/g, ",").replace(/[,\s]+$/, "");
+    if (simplified && simplified !== query.trim()) {
+      await sleep(NOMINATIM_DELAY_MS);
+      hit = await search(simplified, near);
+    }
+  }
+  if (!hit) {
+    throw new Error(
+      `No se encontró "${query.trim()}"` + (near ? " cerca del punto de partida. Agrega colonia o municipio." : ".")
+    );
+  }
+  return { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), label: query.trim(), found: hit.display_name };
 }
 
 async function geocodeAll(queries) {
@@ -40,7 +63,7 @@ async function geocodeAll(queries) {
   for (let i = 0; i < queries.length; i++) {
     setStatus(`Geocodificando ${i + 1} de ${queries.length}…`);
     const isCoord = parseCoords(queries[i]) !== null;
-    points.push(await geocode(queries[i]));
+    points.push(await geocode(queries[i], i === 0 ? null : points[0]));
     if (!isCoord && i < queries.length - 1) await sleep(NOMINATIM_DELAY_MS);
   }
   return points;
@@ -97,7 +120,15 @@ function render({ ordered, distance, duration }, roundtrip) {
   list.replaceChildren(
     ...ordered.map((p) => {
       const li = document.createElement("li");
-      li.textContent = p.label;
+      const text = document.createElement("div");
+      text.textContent = p.label;
+      li.append(text);
+      if (p.found) {
+        const small = document.createElement("small");
+        small.className = "found";
+        small.textContent = p.found;
+        text.append(small);
+      }
       return li;
     })
   );
