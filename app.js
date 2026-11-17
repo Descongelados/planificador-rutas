@@ -88,7 +88,9 @@ async function optimize(points, roundtrip) {
 
 function mapsLinks(ordered, roundtrip) {
   const seq = roundtrip ? [...ordered, ordered[0]] : ordered;
-  const fmt = (p) => `${p.lat},${p.lon}`;
+  // Google geocodifica mejor los números de calle que Nominatim, así que se le pasa el texto
+  // original; solo se usan coordenadas si el usuario las escribió directamente.
+  const fmt = (p) => (parseCoords(p.label) ? `${p.lat},${p.lon}` : p.label.replace(/\|/g, " "));
   const links = [];
   for (let i = 0; i < seq.length - 1; i += MAX_STOPS_PER_LINK - 1) {
     const chunk = seq.slice(i, i + MAX_STOPS_PER_LINK);
